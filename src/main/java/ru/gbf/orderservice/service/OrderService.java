@@ -35,13 +35,11 @@ public class OrderService {
     private final RestTemplate restTemplate = new RestTemplate(new HttpComponentsClientHttpRequestFactory());
 
     public Order create(OrderDTO dto) throws URISyntaxException {
-        List<CartGood> goods = dto.getGoods();
+        List<CartGood> goods = getGoodsFromCart(dto.getIdCart());
+
         List<Long> collect = goods.stream().map(CartGood::getIdGood).collect(Collectors.toList());
-        Map<Long, Integer> map = restTemplate.postForObject(
-                "http://localhost:8080/api/stockpile/checkAllCount",
-                collect,
-                Map.class
-        );
+        Map<Long, Integer> map = getCountOfGoods(collect);
+
         for (int i = 0; i < goods.size(); i++) {
             Long idGood = goods.get(i).getIdGood();
             int count = goods.get(i).getCount();
@@ -49,7 +47,9 @@ public class OrderService {
                 throw new ResourceLackException(idGood, count);
             }
         }
+
         restTemplate.patchForObject(new URI("http://localhost:8082/api/cart/clear"), dto.getIdCart(), Void.class);
+
         Order newOrder = repository.save(new Order(
                         null,
                         UUID.randomUUID().toString(),
@@ -60,6 +60,22 @@ public class OrderService {
                         OrderStatus.PAYED
                 )
         );
+
+        orderGoodsFromStockpile(goods);
+
+        sendToQueue(dto, newOrder);
+        return newOrder;
+    }
+
+    private void sendToQueue(OrderDTO dto, Order newOrder) {
+        jmsTemplate.convertAndSend(destinationQueue, new CreateOrderEmailDto(
+                newOrder.getUuid(),
+                newOrder.getDelivery().name(),
+                dto.getIdCart()
+        ));
+    }
+
+    private void orderGoodsFromStockpile(List<CartGood> goods) {
         List<StockGoodDto> stockGoodDtos = new ArrayList<>();
         for (int i = 0; i < goods.size(); i++) {
             CartGood cartGood = goods.get(i);
@@ -76,13 +92,22 @@ public class OrderService {
                 stockGoodDtos,
                 Void.class
         );
-        jmsTemplate.convertAndSend(destinationQueue, new CreateOrderEmailDto(
-                newOrder.getUuid(),
-                newOrder.getDelivery().name(),
-                dto.getIdCart()
-        ));
-        return newOrder;
     }
 
+    private Map<Long, Integer> getCountOfGoods(List<Long> collect) {
+        return restTemplate.postForObject(
+                "http://localhost:8080/api/stockpile/checkAllCount",
+                collect,
+                Map.class
+        );
+    }
+
+    private List<CartGood> getGoodsFromCart(Long idCart) {
+        return restTemplate.getForObject(
+                "http://localhost:8082/api/cart/showCart/" + idCart,
+                List.class,
+                (Object) null
+        );
+    }
 
 }
